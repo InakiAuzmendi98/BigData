@@ -1,0 +1,474 @@
+#Stats avanzadas y EVENTING de wyscout
+#token key
+key = paste(API_KEY, API_SECRET, sep = ":")
+key = charToRaw(key)
+key = base64enc::base64encode(key)
+key = paste("Basic", key)
+
+
+partidos <- tibble()
+#Lista de partidos
+for (i in 1:length(ligas)) {
+  a <- ligas[i]
+  print(a)
+  partidos_a <- paste0('https://xxxx.wyscout.com/xx/competitions/',a,'/matches')
+  partidos_a <- GET(url=partidos_a,add_headers(Authorization=key))
+  partidos_a <- rawToChar(partidos_a$content)
+  partidos_a <- fromJSON(partidos_a, flatten = T)
+  partidos_a <- partidos_a[["matches"]]
+  partidos_a$league_id <- a
+  partidos <- bind_rows(partidos,partidos_a)
+}
+rm(partidos_a)
+
+#filtramos únicamente partidos finalizados
+partidos <- partidos %>%
+  filter(status=="Played")
+partidos[c('home_team', 'delete_this_column')] <- str_split_fixed(partidos$label, ' - ', 2)
+partidos[c('away_team', 'result')] <- str_split_fixed(partidos$delete_this_column, ', ', 2)
+partidos[c('home_goals', 'away_goals')] <- str_split_fixed(partidos$result, '-', 2)
+partidos <- subset( partidos, select = -c(delete_this_column))
+
+
+#contar partidos extraidos
+nrow(partidos) 
+
+#Maestro de equipos únicos
+maestro_teams = partidos %>%
+  select(home_team) %>%
+  rename(team_name = home_team)
+
+maestro_teams1 = partidos %>%
+  select(away_team) %>%
+  rename(team_name = away_team)
+
+equipos <- bind_rows(maestro_teams,maestro_teams1) %>%
+  distinct()
+list1 = c("general","possession","openPlay","attacks","transitions","passes","defence",
+          "duels","flanks","teams")
+list2 = c("home","away")
+partidos_stats <- tibble()
+partidos_stats_1 <- tibble()
+estadisticas_partido <- tibble()
+for (i in 1:length(list2)) {
+  print(list2[i])
+  for (x in partidos$matchId) {
+    print(x)
+    for (j in 1:length(list1)) {
+      print(list1[j])
+      partidos_stats_x <- paste0('https://xxxx.wyscout.com/xx/matches/',x,'/advancedstats?useSides=1')
+      partidos_stats_x <- GET(url=partidos_stats_x, add_headers(Authorization=key))
+      partidos_stats_x <- rawToChar(partidos_stats_x$content)
+      partidos_stats_x <- fromJSON(partidos_stats_x, flatten = T)
+      partidos_stats_x <- partidos_stats_x[[list1[j]]][[list2[i]]]
+      partidos_stats_x <- data.frame(partidos_stats_x)
+      partidos_stats_x$team_status <- list2[i]
+      partidos_stats_x$matchID <- x
+      partidos_stats_x$llave <- paste0(x,list2[i])
+      if (j == 1) {
+        partidos_stats_1 <- partidos_stats_x
+      } else {
+        partidos_stats_1 <- merge(x=partidos_stats_1,y=partidos_stats_x,by="llave",all.x=TRUE)
+      }
+    }
+    partidos_stats <- bind_rows(partidos_stats,partidos_stats_1)
+  }
+  if (i == 1) {
+    estadisticas_partido <- partidos_stats
+  } else {
+    estadisticas_partido <- bind_rows(estadisticas_partido,partidos_stats)
+  }
+}
+rm(partidos_stats,partidos_stats_1,partidos_stats_x)
+
+#Eventing de partidos de una liga/equipo
+partidos_eventing <- tibble()
+s = 1
+for (x in partidos$matchId) {
+  print(x)
+  print(s)
+  partidos_eventing_x <- paste0('https://xxxx.wyscout.com/v3/matches/',x,'/events')
+  partidos_eventing_x <- GET(url=partidos_eventing_x, add_headers(Authorization=key))
+  partidos_eventing_x <- rawToChar(partidos_eventing_x$content)
+  partidos_eventing_x <- fromJSON(partidos_eventing_x, flatten = T)
+  partidos_eventing_x <- partidos_eventing_x[["events"]]
+  partidos_eventing_x <- data.frame(partidos_eventing_x)
+  #partidos_eventing_x <- subset(partidos_eventing_x, select= -c(type.secondary))
+  partidos_eventing <- bind_rows(partidos_eventing,partidos_eventing_x)
+  s = s+1
+}
+##Las stats avanzadas por competición
+stats_player_primera <- tibble()
+s = 1
+for (x in player_id_primera$player.id) {
+  for (i in 1:length(list3)) {
+    print(x)
+    print(s)
+    stats_player_primera_x <- paste0('https://xxxx.wyscout.com/xx/players/',x,'/advancedstats?compId=',ligas)
+    stats_player_primera_x <- GET(url=stats_player_primera_x, add_headers(Authorization=key))
+    stats_player_primera_x <- rawToChar(stats_player_primera_x$content)
+    stats_player_primera_x <- fromJSON(stats_player_primera_x, flatten = T)
+    stats_player_primera_x <- stats_player_primera_x[[list3[i]]]
+    stats_player_primera_x$player_id <- x
+    stats_player_primera_x <- data.frame(stats_player_primera_x)
+    if (i == 1) {
+      stats_player_primera_1 <- stats_player_primera_x
+    } else {
+      stats_player_primera_1 <- merge(x=stats_player_primera_1,y=stats_player_primera_x,by="player_id",all.x=TRUE)
+    }
+  }
+  stats_player_primera <- bind_rows(stats_player_primera,stats_player_primera_1)
+  s = s+1
+}
+
+#Ahora sacamos las stats acumuladas por Jugador de wyscout y las juntamos todas en un mismo df
+files <- list.files("path/Jugadores_Wyscout", ".xlsx")
+patterns <- as.character(c(1:length(files)))
+replacements <- gsub(" ", "", gsub(".xlsx", "", files))
+files <- paste("path/Jugadores_Wyscout/", files, sep = "")
+wyscout_players <- purrr::map_df(.x = files, .f = read_excel, .id = "League")
+wyscout_players <- wyscout_players %>% filter(!is.na(Position))
+for (i in 1:length(patterns)) {
+  wyscout_players$League <- gsub(paste(patterns[i]), replacements[i], wyscout_players$League)
+}
+wyscout_players <- wyscout_players %>%
+  mutate(League = League %>% 
+           str_split("\\(", n = 2) %>%
+           sapply(function(x) x[1]))
+
+
+
+##Saco las métricas acumuladas de equipo a partir de las stats por partido y maestro de partidos
+matches_wyscout <- dbGetQuery(mysqlconnection,"SELECT * FROM th_matches_team")
+info_match <- dbGetQuery(mysqlconnection,"SELECT * FROM dim_match_info")
+matches_cruzado  <- left_join(matches_wyscout, info_match, by = "id")
+matches_cruzado23 <- matches_cruzado %>%
+  filter(seasonName == "2022/2023" | seasonName == "2023")
+
+x <- matches_wyscout %>%
+  filter(id_team == "2022")
+
+y <- left_join(x, info_match, by = "id")
+
+z <- y %>%
+  filter(competitionId == "7" & seasonName == "2022/2023")
+
+rm(x,y,z)
+
+totalcol <- ncol(matches_cruzado23)
+matches_cruzado23 <- matches_cruzado23 %>%
+  select(1:(totalcol - 15))
+  
+test <- matches_cruzado23 %>% 
+  group_by(id_team) %>%
+  summarise(
+            "Saques de meta/90" = mean(goalKick),
+            "Saques de banda/90" = mean(throwIn),
+            "Saques de banda acertados/90" = mean(throwInSuccess),
+            "Corner con tiro/90" = mean(cornerWithShot),
+            "Deep completed cross/90" = mean(deepCompletedCross),
+            "Pases al area de penalti/90" = mean(ballDeliveryToPenaltyArea),
+            "Entrada a area en conduccion/90" = mean(controlledPenaltyAreaEntry),
+            "Centro al area/90" = mean(crossToPenaltyArea),
+            "Deep completed pass/90" = mean(deepCompletedPass),
+            "Toque en area/90" = mean(touchInBox),
+            "Goles de penalti" = sum(penaltyGoal),
+            "Tiro tras libre directo" = mean(shotAfterFreeKick),
+            "Despejes/90" = mean(clearance),
+            "Goles encajados" = sum(concededGoal),
+            "Pases largos/90" = mean(longPass),
+            "Pases largos acertados/90" = mean(longPassSuccess),
+            "Tiros en contra/90" = mean(shotAgainst),
+            "Tiros en contra a puerta/90" = mean(shotAgainstSuccess),
+            "Tiros fuera del area/90" = mean(shotFromOutsideArea),
+            "Tiros fuera de area a puerta/90" = mean(shotFromOutsideAreaSuccess),
+            "Tackles/90" = mean(tackle),
+            "Tackles ganados/90" = mean(tackleSuccess),
+            "Corners/90" = mean(corner),
+            "Perdidas/90" = mean(loss),
+            "Recuperaciones/90" = mean(recovery),
+            "Duelos/90" = mean(duel),
+            "Duelos ganados/90" = mean(duelSuccess),
+            "Goles favor/90" = mean(goal),
+            "Pases/90" = mean(pass),
+            "Pases acertados/90" = mean(passSuccess),
+            "Tiros/90" = mean(shot),
+            "Tiros a puerta/90" = mean(shotSuccess),
+            "Libre directo/90" = mean(freeKick),
+            "Penaltis/90" = mean(penalty),
+            "Centros/90" = mean(cross),
+            "Centros acertados/90" = mean(crossSuccess),
+            "Duelo ofensivo/90" = mean(offensiveDuel),
+            "Duelo ofensivo ganado/90" = mean(offensiveDuelSuccess),
+            "Duelo defensivo" = mean(defensiveDuel),
+            "Duelos defensivos ganados/90" = mean(defensiveDuelSuccess),
+            "Duelos aereos/90" = mean(aerialDuel),
+            "Duelos aereos ganados/90" = mean(aerialDuelSuccess),
+            "Fueras de juego/90" = mean(offside),
+            "Intercepciones/90" = mean(interception),
+            "Faltas cometidas/90" = mean(foul),
+            "Tarjetas amarillas/90" = mean(yellowCard),
+            "Tarjetas rojas/90" = mean(redCard),
+            "Pases adelante/90" = mean(forwardPass),
+            "Pases adelante acertados/90" = mean(forwardPassSuccess),
+            "Pases atras/90" = mean(backPass),
+            "Pases atras acertados/90" = mean(backPassSuccess),
+            "Pases verticales/90" = mean(verticalPass),
+            "Pases verticales acertados/90" = mean(verticalPassSuccess),
+            "Pases a 3/3 /90" = mean(passToFinalThird),
+            "Pases a 3/3 acertados/90" = mean(passToFinalThirdSuccess),
+            "Pases progresivos/90" = mean(progressivePass),
+            "Pases progresivos acertados/90" = mean(progressivePassSuccess),
+            "SmartPass/90" = mean(smartPass),
+            "SmartPass acertados/90" = mean(smartPassSuccess),
+            "Porcentaje de acierto en saques de banda" = mean(throwInSuccessPercentage),
+            "Porcentaje de penaltis convertidos" = mean(penaltyGoalPercentage),
+            "Porcentaje de tiro despues de libre directo" = mean(shotAfterFreeKickPercentage),
+            "Porcentaje de tiro despues de corner" = mean(cornerWithShotPercentage),
+            "Porcentaje de acierto de Smart Pass" = mean(smartPassSuccessPercentage),
+            "Porcentaje de acierto de pases progresivos" = mean(progressivePassSuccessPercentage),
+            "Porcentaje de acierto de pases a 3/3" = mean(passToFinalThirdSuccessPercentage),
+            "Porcentaje de acierto en pases largos" = mean(longPassSuccessPercentage),
+            "Porcentaje de acierto en pases verticales" = mean(verticalPassSuccessPercentage),
+            "Porcentaje de acierto en pases atras" = mean(backPassSuccessPercentage),
+            "Porcentaje de acierto en pases adelante" = mean(forwardPassSuccessPercentage),
+            "Porcentaje de tackles ganados" = mean(tackleSuccessPercentage),
+            "Porcentaje de duelos aereos ganados" = mean(aerialDuelSuccessPercentage),
+            "Porcentaje de duelos defensivos ganados" = mean(defensiveDuelSuccessPercentage),
+            "Porcentaje de tiros en contra a puerta" = mean(shotAgainstSuccessPercentage),
+            "Porcentaje de duelos ofensivos ganados" = mean(offensiveDuelSuccessPercentage),
+            "Porcentaje de acierto en centros" = mean(crossSuccessPercentage),
+            "Porcentaje de tiros de fuera del area a puerta" = mean(shotFromOutsideAreaSuccessPercentage),
+            "Porcentaje de duelos ganados" = mean(duelSuccessPercentage),
+            "Porcentaje de pases acertados" = mean(passSuccessPercentage),
+            "Porcentaje de tiros a puerta" = mean(shotSuccessPercentage),
+            "Porcentaje de pases laegos acertados" = mean(longPassPercentage),
+            "Porcentaje de balon parado con tiro" = mean(setPiecesWithShotPercentage),
+            "Porcentaje de contraataques con tiro" = mean(counterattacksWithShotPercentage),
+            "Porcentaje de ataques posicionales con tiro" = mean(positionalAttacksWithShotPercentage),
+            "Longotud media de pase" = mean(averagePassLength),
+            "Distancia media de tiro" = mean(averageShotDistance),
+            "xG/90" = mean(xgShot),
+            "PPDA /90" = mean(ppda),
+            "Posesion /90" = mean(possession),
+            "Ataques posicionales /90" = mean(positionalAttacks),
+            "Ataques posicionales con tiro/90" = mean(positionalAttacksWithShot),
+            "ABP/90" = mean(setPieces),
+            "ABP con tiro/90" = mean(setPiecesWithShot),
+            "Contraataques/90" = mean(counterattacks),
+            "Contraataques con tiro/90" = mean(counterattacksWithShot),
+            "Pases x PosesionMinuto /90" = mean(passesPerPossessionMinute),
+            "Pases x PosesionCount /90" = mean(passesPerPossessionCount),
+            "Recuperacion 1/3 /90" = mean(recoveryLow),
+            "Perdidas 1/3 /90" = mean(lossLow),
+            "Recuperaciones 2/3 /90" = mean(recoveryMedium),
+            "Perdidas 2/3 /90" = mean(lossMedium),
+            "Recuperaciones 3/3 /90" = mean(recoveryHigh),
+            "Perdidas 3/3 /90" = mean(lossHigh),
+            "Minutos jugados/90" = mean(minutesOnField),
+  )           
+
+
+###ALGORITMO DE SIMILITUD###
+library(tidyverse)
+library(distances)
+library(reactablefmtr)
+library(reactable)
+
+player_stats <- dbGetQuery(con, "SELECT * FROM wyscout_players")
+df <- player_stats %>%
+  mutate(Posicion = case_when(
+    Posicion %in% c("CB", "RCB", "LCB", "LCB3", "RCB3") ~ "CB",
+    Posicion %in% c("RWB", "RB") ~ "RB",
+    Posicion %in% c("DMF", "RCMF", "RDMF", "LCMF3", "LDMF", "RAMF", "AMF", "LCMF", "LAMF", "RCMF3") ~ "CM",
+    Posicion %in% c("CF") ~ "F",
+    Posicion %in% c("LWF", "LW") ~ "LW",
+    Posicion %in% c("LB", "LWB") ~ "LB",
+    Posicion %in% c("GK") ~ "GK",
+    Posicion %in% c("RW", "RWF") ~ "RW",
+    TRUE ~ "Error"
+  ))
+#Seleccionar las columnas numericas
+
+numericas <- df[, 6:107]
+
+#Seleccionar las metricas que vamos a utilizar para comparar
+
+metricas <- c("xG/90", "Goles/90", "Centros desde la banda izquierda/90",
+              "Regates/90", "Carreras en progresion/90", "xA/90", "Pases al area de penalti/90")
+              
+#Generar df que coja el df numericas y me escoja solo las metricas seleccionadas
+players_test <- numericas[, metricas]
+
+#Convertirlo en matriz
+
+numericas <- as.matrix(players_test)
+
+# Calculamos las distancias y convertimos en matriz
+
+mat_dist <- distances(data = numericas, normalize = "mahalanobize")
+mat_dist <- as.matrix(mat_dist)
+
+#Rellenamos nombres de cols y rows con el de los jugadores
+
+rownames(mat_dist) <- df$Jugador
+colnames(mat_dist) <- df$Jugador
+
+# Seleccionamos el jugador que queremos comparar y lo convertimos en df
+
+player_similitud <- mat_dist[, "Ander Barrenetxea"]
+
+df_similitud <- as.data.frame(player_similitud)
+
+#Añadimos el nombre de la columna y le añadimos más
+
+colnames(df_similitud) <- "Distancia"
+df_similitud$Player <- df$Jugador
+df_similitud$Age <- df$Edad
+df_similitud$Position <- df$Posicion
+df_similitud$MarketValue <- df$`Valor de mercado`
+df_similitud$Team <- df$Equipo
+df_similitud$Country <- df$`Pais nacimiento`
+df_similitud$Foot <- df$Pie
+
+
+
+
+#A partir de la distancia calculamos la similitud en valores de 0-100
+
+d95 <- quantile(df_similitud$Distancia, 0.95)
+
+df_similitud$Similitud <- (1 - (df_similitud$Distancia / d95))*100
+
+#Creamos el DF final de la similitud
+
+final_df <- df_similitud[order(-df_similitud$Similitud),]
+
+rownames(final_df) <- 1:nrow(final_df)
+final_df <- final_df[1:nrow(final_df),]
+
+#Unimos el resto de valores que pueden ser importantes
+
+data_to_join <- player_stats %>%
+  select(`Minutos jugados`, Altura,Jugador, Pie)
+
+data_to_join <- data_to_join %>%
+  rename(Player = Jugador)
+data_to_join <- data_to_join %>%
+  rename( MinTot = `Minutos jugados`)
+data_to_join <- data_to_join %>%
+  rename( Height = Altura)
+
+
+final_df <- merge( x = final_df, y = data_to_join,
+                   by = "Player", all.x = TRUE)
+
+
+# Aquí hacemos el filtro según nuestra busqueda
+
+data_sim <- final_df %>%
+  filter(Position %in% c("LW"),
+         MinTot >500,
+         MarketValue <5000000,
+         MarketValue >1000000,
+         Age >16,
+         Age <26)
+
+#Ordenamos el df de mayor similitud a menor
+data_sim <- data_sim %>%
+  arrange(desc(Similitud)) 
+
+
+if ("Ander Barrenetxea" %in% unique(data_sim$Player)) {
+  # Si "Mikel Oyarzabal" ya está presente en data_sim, no se hace nada
+} else {
+  data_sim <- rbind(data_sim, final_df[final_df$Player == "Ander Barrenetxea", ])
+}
+
+rownames(data_sim) <- 1:nrow(data_sim) 
+
+data_sim <- data_sim %>% arrange (-Similitud)
+data_sim$Similitud <- round(data_sim$Similitud, 2)
+data_sim$Distancia <- round(data_sim$Distancia, 2)
+data_sim <- data_sim %>%
+  relocate(c(Similitud, Distancia),
+           .before = Position)
+
+
+
+
+
+# Crear una función de formato personalizada
+mi_formato <- formatter(
+  "span",
+  style = function(x) ifelse(x > 0.5, "color: red", "color: blue")
+)
+
+# Aplicar formato a las columnas deseadas en el dataframe
+data_sim$formateada <- mi_formato(data_sim$Similitud)
+
+# Eliminar la columna "Formateada" del dataframe
+data_sim <- data_sim[, -which(names(data_sim) == "formateada")]
+
+# Pintar la tabla utilizando reactable con las opciones adicionales
+reactable(
+  data_sim,
+  theme = fivethirtyeight(header_font_size = 11, cell_padding = 7, centered = TRUE),
+  defaultSorted = "Similitud",
+  defaultSortOrder = "desc",
+  pagination = FALSE,
+  showSortIcon = FALSE,
+  highlight = TRUE,
+  columns = list(
+    Player = colDef(
+      name = "Player",
+      align = "center"
+    ),
+    Team = colDef(
+      name = "Team",
+      align = "center"
+    ),
+    Similitud = colDef(
+      name = "Similarity",
+      align = "center",
+      defaultSortOrder = "desc",
+      cell = data_bars(data_sim, text_size = 12, min_value = 0, max_value = 100, fill_color = "#black", background = "#d5e3fo", bias = 0.6, icon_size = 80, box_shadow = TRUE)
+    ),
+    MinTot = colDef(
+      name = "Mins Played",
+      align = "center",
+      cell = color_tiles(data_sim, colors = c("#e61207", "#dff757", "#1fc916"), bias = 0.5, box_shadow = TRUE, text_size = 11)
+    ),
+    Position = colDef(
+      name = "Position",
+      align = "center"
+    ),
+    Age = colDef(
+      name = "Age",
+      align = "center",
+      style = group_merge_sort("Edad")
+    ),
+    MarketValue = colDef(
+      name = "Market Value",
+      align = "center",
+      format = colFormat(currency = "EUR", separators = TRUE)
+    )
+  )
+)
+
+
+
+### MAPA DE CALOR #####
+library(ggplot2)
+library(ggsoccer)
+Acciones <- subset(dataset)
+pitch_color="#78c679" p<-ggplot() + annotate_pitch(colour = "white", fill = pitch_color,
+dimensions = pitch_statsbomb) +
+theme_pitch() +
+stat_density2d(data=Acciones,aes(x=pos_x,y=pos_y,fill = ..level..,alpha=..level..), geom="polygon",show.legend = FALSE) +
+scale_fill_gradient(low="blue", high="red",aesthetics = "fill") + theme(plot.background = element_rect(fill = pitch_color),
+title = element_text(colour = "white",size = 14, face = "bold"),
+legend.position = "none",
+plot.title = element_text(hjust = 0.5),plot.subtitle = element_text(hjust = 0.5)) + ggtitle(label=paste("Mapa de calor de: ",dataset$id))+
+labs(subtitle = "Mapa de calor de las Acciones",size = 14)
+plot(p)
